@@ -1,0 +1,16 @@
+{
+  "name": "gnosis-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/sync-references.mjs",
+    "check": "node scripts/sync-references.mjs --check && node scripts/check-skills.mjs",
+    "test": "node --test tests/*.test.mjs && npm --prefix skills/setup/setup-project test",
+    "verify": "npm run check && npm test"
+  },
+  "license": "MIT"
+}

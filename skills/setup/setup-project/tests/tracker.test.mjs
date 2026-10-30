@@ -1,0 +1,218 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { check, migrate } from '../scripts/tracker.mjs';
+
+function fixture(t) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'gnosis-tracker-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = path.join(dir, 'source'), target = path.join(dir, 'target');
+  fs.mkdirSync(path.join(source, 'issues'), { recursive: true });
+  const write = (p, value) => { fs.mkdirSync(path.dirname(path.join(source, p)), { recursive: true }); fs.writeFileSync(path.join(source, p), value); };
+  return { dir, source, target, write };
+}
+const issue = (id, status = 'todo', deps = '[]', extra = '') => `---\nid: ${id}\ntitle: Test ${id}\nstatus: ${status}\ndepends_on: ${deps}\n${extra}---\nBody\n<!-- comment: preserved -->\n`;
+
+test('check validates dependencies, parent references, duplicate ids and cycles', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', issue('a', 'todo', '[b]'));
+  f.write('issues/b.md', issue('b'));
+  assert.equal(check(f.source).ok, true);
+  f.write('issues/b.md', issue('b', 'todo', '[a]', 'parent: missing\n'));
+  const errors = check(f.source).errors.join('\n');
+  assert.match(errors, /循环引用/); assert.match(errors, /缺失 id missing/);
+  f.write('issues/c.md', issue('a'));
+  assert.match(check(f.source).errors.join('\n'), /重复 id/);
+});
+test('malformed YAML and noncanonical states are errors', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', '---\nid: a\nid: b\n---\n');
+  assert.equal(check(f.source).ok, false);
+  f.write('issues/a.md', issue('a', 'unknown'));
+  assert.match(check(f.source).errors.join('\n'), /未知 status/);
+});
+test('default migration previews without writes; apply preserves bodies, originals, spec and references', t => {
+  const f = fixture(t);
+  const raw = issue('a', 'wontfix') + '\n[Spec](../spec.md)\n';
+  f.write('issues/a.md', raw); f.write('spec.md', '# Original spec\n\n[Issue](issues/a.md)\n');
+  const options = { ...f, format: 'scratch' };
+  const preview = migrate(options);
+  assert.equal(preview.ok, true); assert.equal(preview.applied, false); assert.equal(fs.existsSync(f.target), false);
+  const result = migrate({ ...options, apply: true });
+  assert.equal(result.applied, true);
+  assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
+  assert.equal(fs.readFileSync(path.join(f.target, '_originals/issues/a.md'), 'utf8'), raw);
+  const migrated = fs.readFileSync(path.join(f.target, 'issues/a.md'), 'utf8');
+  assert.match(migrated, /status: cancelled/);
+  assert.equal(migrated.split('---\n')[2], raw.split('---\n')[2]);
+  assert.equal(fs.readFileSync(path.join(f.target, 'spec.md'), 'utf8'), fs.readFileSync(path.join(f.source, 'spec.md'), 'utf8'));
+  assert.equal(result.states[0].from, 'wontfix');
+  assert.equal(check(f.target).ok, true);
+  assert.throws(() => migrate({ ...options, apply: true }), /目标已存在/);
+});
+test('unknown state blocks apply until an explicit mapping is supplied', t => {
+  const f = fixture(t); f.write('issues/a.md', issue('a', 'waiting'));
+  const options = { ...f, format: 'legacy', apply: true };
+  assert.equal(migrate(options).ok, false); assert.equal(fs.existsSync(f.target), false);
+  assert.equal(migrate({ ...options, mapping: { waiting: 'blocked' } }).applied, true);
+});
+test('missing links and complex reference forms block writes', t => {
+  const f = fixture(t); f.write('issues/a.md', issue('a') + '[external file](../../other.md)\n');
+  const options = { ...f, format: 'legacy', apply: true };
+  assert.match(migrate(options).errors.join('\n'), /未保留引用/);
+  assert.equal(fs.existsSync(f.target), false);
+  f.write('issues/a.md', issue('a') + '[spec][ref]\n\n[ref]: ../spec.md\n');
+  assert.equal(migrate(options).ok, false);
+});
+test('symlinks, nested targets, collisions and escaping config are rejected', t => {
+  const f = fixture(t); f.write('issues/a.md', issue('a'));
+  assert.throws(() => migrate({ ...f, target: path.join(f.source, 'new'), format: 'legacy' }), /嵌套/);
+  fs.symlinkSync(f.source, path.join(f.dir, 'alias'));
+  assert.throws(() => migrate({ ...f, source: path.join(f.dir, 'alias'), format: 'legacy' }), /符号链接/);
+  fs.symlinkSync(path.join(f.source, 'issues/a.md'), path.join(f.source, 'issues/link.md'));
+  assert.throws(() => migrate({ ...f, format: 'legacy' }), /符号链接/);
+  fs.unlinkSync(path.join(f.source, 'issues/link.md'));
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: '../outside' } }));
+  assert.throws(() => check(f.source), /tracker 必须位于项目内/);
+  fs.unlinkSync(path.join(f.source, '.gnosis/project.json'));
+  f.write('issues/_originals/secret.md', 'collision');
+  assert.throws(() => migrate({ ...f, format: 'legacy' }), /保留路径/);
+});
+test('optional project config selects tracker path', t => {
+  const f = fixture(t);
+  f.write('custom/a.md', issue('a'));
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'custom' }, reports: 'reports' }));
+  assert.equal(check(f.source).count, 1);
+});
+
+test('real legacy template converts numeric ids, deps, null parent and preserves closed subdirectories', t => {
+  const f = fixture(t);
+  const legacy = (id, status, parent, deps) => `---\nid: ${id}\ntitle: "Issue ${id}"\nstatus: ${status}\npriority: medium\nmilestone: null\nparent: ${parent}\ndeps: [${deps}]\nlabels: []\ncreated: 2026-10-30\n---\n\n## Context\nOriginal\n## Goal\nShip\n## Acceptance criteria\n- [ ] Pass\n## Verification\nnode --test\n`;
+  f.write('issues/done/0001-first.md', legacy(1, 'done', 'null', ''));
+  f.write('issues/0002-second.md', legacy(2, 'todo', 'null', '1'));
+  f.write('issues/wontfix/0003-third.md', legacy(3, 'wontfix', 'null', ''));
+  f.write('code.js', 'must not copy project code');
+  const result = migrate({ ...f, format: 'legacy', apply: true });
+  assert.equal(result.applied, true);
+  assert.equal(check(f.target).count, 3);
+  assert.equal(fs.existsSync(path.join(f.target, 'code.js')), false);
+  assert.match(fs.readFileSync(path.join(f.target, 'issues/0002-second.md'), 'utf8'), /depends_on:\n  - "1"/);
+});
+test('real Matt Pocock template preserves full raw markdown and requires explicit triage state choice', t => {
+  const f = fixture(t);
+  const raw = '# 01: First slice\n\n**What to build:** User flow\n\n**Blocked by:** None (can start immediately)\n\n**Status:** ready-for-agent\n\n- [ ] Works\n\n## Comments\nUser comment\n';
+  f.write('spec.md', '# Spec\n'); f.write('issues/01-first.md', raw);
+  f.write('issues/02-second.md', '# 02: Second slice\n\n**Blocked by:** 01\n\n**Status:** ready-for-agent\n');
+  const options = { ...f, format: 'scratch' };
+  assert.equal(migrate({ ...options, apply: true }).applied, false);
+  const result = migrate({ ...options, mapping: { 'ready-for-agent': 'todo' }, apply: true });
+  assert.equal(result.ok, true);
+  assert.equal(fs.readFileSync(path.join(f.target, 'issues/01-first.md'), 'utf8').endsWith(raw), true);
+  assert.equal(result.ids[1].depends_on[0], '01');
+  assert.equal(check(f.target).ok, true);
+});
+test('ambiguous scratch blocker and review state fail closed', t => {
+  const f = fixture(t); f.write('spec.md', '# Spec\n');
+  f.write('issues/01-first.md', '# 01: First\n**Blocked by:** 02: Some title\n**Status:** todo\n');
+  assert.match(migrate({ ...f, format: 'scratch', apply: true }).errors.join('\n'), /复杂引用/);
+  f.write('issues/01-first.md', issue('a', 'review'));
+  assert.equal(migrate({ ...f, format: 'legacy', apply: true }).ok, false);
+});
+test('parent ownership and dependency cycles are checked separately; null parent is valid', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', issue('a', 'todo', '[b]', 'parent: null\n'));
+  f.write('issues/b.md', issue('b', 'todo', '[]', 'parent: a\n'));
+  assert.equal(check(f.source).ok, true);
+  f.write('issues/a.md', issue('a', 'todo', '[]', 'parent: b\n'));
+  f.write('issues/b.md', issue('b', 'todo', '[]', 'parent: a\n'));
+  assert.match(check(f.source).errors.join('\n'), /循环引用/);
+});
+
+test('non-UTF8 issue bodies are blocked rather than silently rewritten', t => {
+  const f = fixture(t); f.write('issues/a.md', Buffer.concat([Buffer.from(issue('a')), Buffer.from([0xff])]));
+  const result = migrate({ ...f, format: 'legacy', apply: true });
+  assert.equal(result.applied, false); assert.match(result.errors.join('\n'), /UTF-8/);
+  assert.equal(fs.existsSync(f.target), false);
+});
+
+test('absolute local links including encoded and Windows forms block apply', t => {
+  const f = fixture(t);
+  f.write('spec.md', '# Spec\n');
+  const absolute = path.join(f.source, 'spec.md');
+  const targets = [absolute, encodeURIComponent(absolute), 'C:/old/spec.md', 'C:\\old\\spec.md', '\\\\server\\share\\spec.md', '/root/spec.md', 'file:///old/spec.md'];
+  for (const target of targets) {
+    f.write('issues/a.md', issue('a') + `[Spec](${target})\n`);
+    const result = migrate({ ...f, format: 'legacy', apply: true });
+    assert.equal(result.applied, false, target);
+    assert.match(result.errors.join('\n'), /绝对本地路径/, target);
+    assert.equal(fs.existsSync(f.target), false);
+  }
+});
+test('HTML resources beyond anchors and images are rejected while comments are preserved', t => {
+  const f = fixture(t);
+  const forms = ['<video src="../spec.md"></video>', '<object data="../spec.md"></object>', '<source srcset="../spec.md">', '<iframe src="../spec.md"></iframe>', '<div style="background:url(../spec.md)">text</div>'];
+  for (const html of forms) {
+    f.write('issues/a.md', issue('a') + html + '\n');
+    const result = migrate({ ...f, format: 'legacy', apply: true });
+    assert.equal(result.applied, false, html);
+    assert.match(result.errors.join('\n'), /HTML/, html);
+    assert.equal(fs.existsSync(f.target), false);
+  }
+  f.write('issues/a.md', issue('a') + '<!-- ordinary comment -->\n');
+  assert.equal(migrate({ ...f, format: 'legacy' }).ok, true);
+});
+
+test('nested link labels and image-wrapped links block apply without writes', t => {
+  const f = fixture(t);
+  f.write('issues/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const forms = ['[See [related] ticket](../outside.md)', '[![Logo](logo.png)](../outside.md)'];
+  for (const form of forms) {
+    const raw = issue('a') + form + '\n';
+    f.write('issues/a.md', raw);
+    const result = migrate({ ...f, format: 'legacy', apply: true });
+    assert.equal(result.applied, false, form);
+    assert.match(result.errors.join('\n'), /嵌套方括号/, form);
+    assert.equal(fs.existsSync(f.target), false);
+    assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
+  }
+});
+test('reports configuration rejects symbolic links outside the project and dangling links', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', issue('a'));
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'issues' }, reports: 'reports' }));
+  const outside = path.join(f.dir, 'outside');
+  fs.mkdirSync(outside);
+  const reports = path.join(f.source, 'reports');
+  fs.symlinkSync(outside, reports);
+  assert.throws(() => check(f.source), /符号链接/);
+  fs.unlinkSync(reports);
+  fs.symlinkSync(path.join(f.dir, 'missing'), reports);
+  assert.throws(() => check(f.source), /符号链接/);
+  fs.unlinkSync(reports);
+  fs.mkdirSync(reports);
+  assert.equal(check(f.source).ok, true);
+});
+
+test('non-string and empty source states block apply without implicit coercion', t => {
+  const f = fixture(t);
+  for (const status of ['[done]', 'null', '{state: done}', '""', '"   "']) {
+    const raw = issue('a', status);
+    f.write('issues/a.md', raw);
+    const result = migrate({ ...f, format: 'legacy', mapping: { done: 'done' }, apply: true });
+    assert.equal(result.applied, false, status);
+    assert.match(result.errors.join('\n'), /源 status 必须是非空字符串/, status);
+    assert.equal(fs.existsSync(f.target), false);
+    assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
+  }
+});
+test('mapping API requires a plain object with nonempty keys and canonical string values', t => {
+  const f = fixture(t); f.write('issues/a.md', issue('a', 'waiting'));
+  const options = { ...f, format: 'legacy', apply: true };
+  for (const mapping of [null, [], new Map(), { '': 'todo' }, { waiting: ['done'] }, { waiting: null }, { waiting: 'review' }]) {
+    assert.throws(() => migrate({ ...options, mapping }), /状态映射/);
+    assert.equal(fs.existsSync(f.target), false);
+  }
+  assert.equal(migrate({ ...options, mapping: { waiting: 'blocked' } }).applied, true);
+});

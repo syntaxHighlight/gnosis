@@ -1,6 +1,6 @@
 # Gnosis skills
 
-syntaxHighlight 日常开发使用的 21 个 skills，可独立安装，按需组合。
+syntaxHighlight 日常开发使用的 22 个 skills，可独立安装，按需组合。
 
 ## 安装
 
@@ -16,7 +16,7 @@ npx skills add syntaxHighlight/gnosis --skill clean-workspace present-report --a
 | [项目接入](skills/setup/) | `setup-project` |
 | [规划](skills/planning/) | `grill-me`、`grill-with-docs`、`to-spec`、`to-tickets`、`improve-codebase-architecture` |
 | [执行](skills/execution/) | `implement`、`implement-spec`、`diagnosing-bugs` |
-| [维护](skills/maintenance/) | `maintain-tasks`、`recover-work`、`clean-workspace`、`maintain-docs`、`improve-skills` |
+| [维护](skills/maintenance/) | `maintain-tasks`、`recover-work`、`clean-workspace`、`maintain-docs`、`improve-skills`、`review-defensive-code` |
 | [表达](skills/presentation/) | `humanizer`、`present-report` |
 | [基础方法](skills/foundations/) | `codebase-design`、`grilling`、`domain-modeling`、`tdd`、`code-review` |
 

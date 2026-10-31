@@ -6,15 +6,15 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const check = process.argv.includes('--check');
 let failures = 0;
-for (const { name, dir } of await discoverSkills(path.join(root, 'skills'))) {
+for (const { name: skillName, dir } of await discoverSkills(path.join(root, 'skills'))) {
   const text = await fs.readFile(path.join(dir, 'SKILL.md'), 'utf8');
-  for (const name of ['artifacts', 'tracker']) {
+  for (const name of ['artifacts', 'tracker', 'defensive-design']) {
     if (!text.includes(`references/${name}.md`)) continue;
     const content = await fs.readFile(path.join(root, 'shared', `${name}.md`), 'utf8');
     const target = path.join(dir, 'references', `${name}.md`);
     if (check) {
       const actual = await fs.readFile(target, 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-      if (actual !== content) { console.error(`Out of sync: ${name}/references/${name}.md`); failures++; }
+      if (actual !== content) { console.error(`Out of sync: ${skillName}/references/${name}.md`); failures++; }
     } else {
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, content);

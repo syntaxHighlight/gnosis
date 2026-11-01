@@ -1,6 +1,6 @@
 # Gnosis skills
 
-syntaxHighlight 日常开发使用的 22 个 skills，可独立安装，按需组合。
+syntaxHighlight 日常开发使用的 20 个 skills，按需安装和组合。
 
 ## 安装
 
@@ -9,16 +9,22 @@ npx skills add syntaxHighlight/gnosis --list
 npx skills add syntaxHighlight/gnosis --skill clean-workspace present-report --agent codex
 ```
 
+`grill-with-docs` 依赖 `grill-me`，选择安装时请一起列出：
+
+```sh
+npx skills add syntaxHighlight/gnosis --skill grill-me grill-with-docs --agent codex
+```
+
 ## 技能
 
 | 分类 | 技能 |
 | --- | --- |
 | [项目接入](skills/setup/) | `setup-project` |
 | [规划](skills/planning/) | `grill-me`、`grill-with-docs`、`to-spec`、`to-tickets`、`improve-codebase-architecture` |
-| [执行](skills/execution/) | `implement`、`implement-spec`、`diagnosing-bugs` |
-| [维护](skills/maintenance/) | `maintain-tasks`、`recover-work`、`clean-workspace`、`maintain-docs`、`improve-skills`、`review-defensive-code` |
+| [执行](skills/execution/) | `implement`、`diagnosing-bugs` |
+| [维护](skills/maintenance/) | `maintain-tasks`、`recover-work`、`clean-workspace`、`maintain-docs`、`improve-skills`、`review-code-design` |
 | [表达](skills/presentation/) | `humanizer`、`present-report` |
-| [基础方法](skills/foundations/) | `codebase-design`、`grilling`、`domain-modeling`、`tdd`、`code-review` |
+| [基础方法](skills/foundations/) | `codebase-design`、`domain-modeling`、`tdd`、`code-review` |
 
 技能沿用项目已有约定，无需先初始化。新建本地任务默认放在 `issues/`，报告放在 `reports/`。
 

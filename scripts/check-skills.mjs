@@ -42,4 +42,4 @@ for (const { name, dir } of await discoverSkills(path.join(root, 'skills'))) {
   count++;
 }
 if (errors.length) { console.error(errors.join('\n')); process.exitCode = 1; }
-else console.log(`${count} independently packaged skills validated.`);
+else console.log(`${count} skill packages validated.`);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { check, migrate } from '../scripts/tracker.mjs';
+import { check, checkConfig, migrate } from '../scripts/tracker.mjs';
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'gnosis-tracker-test-'));
@@ -215,4 +215,90 @@ test('mapping API requires a plain object with nonempty keys and canonical strin
     assert.equal(fs.existsSync(f.target), false);
   }
   assert.equal(migrate({ ...options, mapping: { waiting: 'blocked' } }).applied, true);
+});
+
+test('execution, category and triage are independent; optional fields preserve old records', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', issue('a', 'in-progress', '[]', 'category: bug\ntriage: ready-for-human\nlabels: [bug, enhancement]\n'));
+  assert.equal(check(f.source).ok, true);
+  for (const extra of ['category: [bug, enhancement]\n', 'category: feature\n', 'triage: [needs-info, ready-for-agent]\n', 'triage: done\n', 'triage: null\n']) {
+    f.write('issues/a.md', issue('a', 'todo', '[]', extra));
+    assert.equal(check(f.source).ok, false, extra);
+  }
+  f.write('issues/a.md', issue('a'));
+  assert.equal(check(f.source).ok, true);
+});
+
+test('configuration accepts old v1 and validates unified project settings without running commands', t => {
+  const f = fixture(t);
+  assert.equal(checkConfig(f.source).configured, false);
+  const config = {
+    version: 1, mode: 'gnosis', tracker: { type: 'local', path: 'issues' },
+    glossary: 'GLOSSARY.md', adr: 'docs/adr', specs: 'specs', reports: 'reports',
+    verification: { commands: ['touch should-not-exist'] }, git: { mode: 'delivery', base: 'main' },
+    custom: { preserved: true },
+  };
+  f.write('.gnosis/project.json', JSON.stringify(config));
+  assert.deepEqual(checkConfig(f.source).config, config);
+  assert.equal(fs.existsSync(path.join(f.source, 'should-not-exist')), false);
+  for (const patch of [{ mode: 'other' }, { specs: '../escape' }, { adr: '/absolute' }, { glossary: 'C:\\outside.md' }, { verification: { commands: [''] } }, { verification: { commands: 'npm test' } }, { git: { mode: 'branch' } }, { git: { mode: 'manual', base: '' } }]) {
+    f.write('.gnosis/project.json', JSON.stringify({ ...config, ...patch }));
+    assert.throws(() => checkConfig(f.source), undefined, JSON.stringify(patch));
+  }
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'issues' }, reports: 'reports' }));
+  assert.equal(checkConfig(f.source).ok, true);
+});
+
+test('remote mapping is checked without pretending to validate remote records', t => {
+  const f = fixture(t);
+  const tracker = { type: 'remote', provider: 'github', project: 'owner/repo', mapping: { status: { todo: 'Todo', done: 'Done' }, category: { bug: 'bug' }, triage: { 'needs-info': 'waiting-for-info', 'ready-for-agent': 'agent-ready' } } };
+  const write = value => f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: value }));
+  write(tracker);
+  assert.equal(checkConfig(f.source).ok, true);
+  assert.throws(() => check(f.source), /远程 tracker/);
+  f.write('copy/a.md', issue('a'));
+  assert.equal(check(f.source, 'copy').count, 1);
+  for (const patch of [{ provider: '' }, { project: null }, { mapping: [] }, { mapping: { triage: { ready: 'ready' } } }, { mapping: { status: { todo: 'same', done: 'same' } } }, { mapping: { category: { bug: ['bug'] } } }, { mapping: { labels: {} } }]) {
+    write({ ...tracker, ...patch });
+    assert.throws(() => checkConfig(f.source), undefined, JSON.stringify(patch));
+  }
+});
+
+test('new configured locations reject symlinks even before files exist', t => {
+  const f = fixture(t);
+  fs.symlinkSync(path.join(f.dir, 'missing'), path.join(f.source, 'docs'));
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'issues' }, adr: 'docs/adr' }));
+  assert.throws(() => checkConfig(f.source), /符号链接/);
+});
+
+test('explicit migration preserves triage decisions and rejects unknown new values without writing', t => {
+  const f = fixture(t);
+  const raw = issue('a', 'ready-for-agent', '[]', 'labels: [old-label]\n');
+  f.write('issues/a.md', raw);
+  const options = { ...f, format: 'legacy', mapping: { 'ready-for-agent': { status: 'todo', category: 'enhancement', triage: 'ready-for-agent' } } };
+  const preview = migrate(options);
+  assert.deepEqual(preview.states[0], { path: 'issues/a.md', from: 'ready-for-agent', to: 'todo', category: 'enhancement', triage: 'ready-for-agent' });
+  assert.equal(fs.existsSync(f.target), false);
+  assert.equal(migrate({ ...options, apply: true }).applied, true);
+  const output = fs.readFileSync(path.join(f.target, 'issues/a.md'), 'utf8');
+  assert.match(output, /triage: ready-for-agent/);
+  assert.match(output, /old-label/);
+  assert.equal(check(f.target).ok, true);
+  assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
+});
+
+test('unknown category and triage block migration; wontfix keeps its decision', t => {
+  const f = fixture(t);
+  for (const extra of ['category: unknown\n', 'triage: unknown\n']) {
+    const raw = issue('a', 'todo', '[]', extra);
+    f.write('issues/a.md', raw);
+    const result = migrate({ ...f, format: 'legacy', apply: true });
+    assert.equal(result.applied, false);
+    assert.match(result.errors.join('\n'), /未知 (category|triage)/);
+    assert.equal(fs.existsSync(f.target), false);
+    assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
+  }
+  f.write('issues/a.md', issue('a', 'wontfix'));
+  assert.equal(migrate({ ...f, format: 'legacy', apply: true }).applied, true);
+  assert.match(fs.readFileSync(path.join(f.target, 'issues/a.md'), 'utf8'), /triage: wontfix/);
 });

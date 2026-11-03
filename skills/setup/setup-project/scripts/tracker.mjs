@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { parseDocument, stringify } from 'yaml';
 
 const statuses = new Set(['todo', 'in-progress', 'blocked', 'done', 'cancelled']);
+const categories = new Set(['bug', 'enhancement']);
+const triages = new Set(['needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix']);
 const fail = message => { throw new Error(message); };
 const inside = (root, p) => p === root || p.startsWith(root + path.sep);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -52,6 +54,8 @@ function validate(records) {
     else byId.set(d.id, { data: d, file });
     if (typeof d.title !== 'string' || !d.title.trim()) err('title 必须是非空字符串');
     if (!statuses.has(d.status)) err(`未知 status ${JSON.stringify(d.status)}`);
+    if (d.category !== undefined && !categories.has(d.category)) err(`未知 category ${JSON.stringify(d.category)}`);
+    if (d.triage !== undefined && !triages.has(d.triage)) err(`未知 triage ${JSON.stringify(d.triage)}`);
     if (!Array.isArray(d.depends_on) || d.depends_on.some(x => typeof x !== 'string') || new Set(d.depends_on).size !== d.depends_on.length) err('depends_on 必须是不重复字符串列表');
     if (d.parent !== undefined && d.parent !== null && typeof d.parent !== 'string') err('parent 必须是字符串或 null');
   }
@@ -76,18 +80,53 @@ function validate(records) {
   }
   return errors;
 }
+function object(value) {
+  return value !== null && !Array.isArray(value) && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+}
+function projectPath(root, value, field) {
+  if (typeof value !== 'string' || !value.trim() || path.isAbsolute(value) || path.win32.isAbsolute(value) || !inside(root, path.resolve(root, value))) fail(`${field} 必须位于项目内，且为非空相对路径`);
+  safePath(path.resolve(root, value));
+}
+function fieldMapping(mapping, field, allowed) {
+  if (!object(mapping) || Object.entries(mapping).some(([key, value]) => !allowed.has(key) || typeof value !== 'string' || !value.trim())) fail(`${field} 必须将标准字段值映射到非空远程字符串`);
+  if (new Set(Object.values(mapping)).size !== Object.values(mapping).length) fail(`${field} 远程值不能重复`);
+}
+export function readConfig(root) {
+  root = safePath(root);
+  const configPath = path.join(root, '.gnosis/project.json');
+  safePath(configPath);
+  if (!fs.existsSync(configPath)) return null;
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!object(config) || config.version !== 1 || !object(config.tracker)) fail('不支持的 .gnosis/project.json 配置');
+  if (config.mode !== undefined && config.mode !== 'gnosis') fail('mode 必须为 gnosis');
+  if (config.tracker.type === 'local') projectPath(root, config.tracker.path, 'tracker');
+  else if (config.tracker.type === 'remote') {
+    for (const field of ['provider', 'project']) if (typeof config.tracker[field] !== 'string' || !config.tracker[field].trim()) fail(`远程 tracker.${field} 必须是非空字符串`);
+  } else fail('tracker.type 必须为 local 或 remote');
+  if (config.tracker.mapping !== undefined) {
+    if (!object(config.tracker.mapping)) fail('tracker.mapping 必须是对象');
+    for (const [field, allowed] of [['status', statuses], ['category', categories], ['triage', triages]]) {
+      if (config.tracker.mapping[field] !== undefined) fieldMapping(config.tracker.mapping[field], `tracker.mapping.${field}`, allowed);
+    }
+    for (const field of Object.keys(config.tracker.mapping)) if (!['status', 'category', 'triage'].includes(field)) fail(`未知 tracker.mapping 字段 ${field}`);
+  }
+  for (const field of ['reports', 'glossary', 'adr', 'specs']) if (config[field] !== undefined) projectPath(root, config[field], field);
+  if (config.verification !== undefined && (!object(config.verification) || !Array.isArray(config.verification.commands) || config.verification.commands.some(command => typeof command !== 'string' || !command.trim()))) fail('verification.commands 必须为字符串列表，各命令非空；列表可为空');
+  if (config.git !== undefined) {
+    if (!object(config.git) || !['delivery', 'manual'].includes(config.git.mode)) fail('git.mode 必须为 delivery 或 manual');
+    if (config.git.base !== undefined && (typeof config.git.base !== 'string' || !config.git.base.trim())) fail('git.base 必须是非空字符串');
+  }
+  return config;
+}
+export function checkConfig(root) {
+  const config = readConfig(root);
+  return { ok: true, configured: config !== null, config };
+}
 export function check(root, trackerOverride) {
   root = safePath(root);
-  let tracker = trackerOverride || 'issues';
-  const configPath = path.join(root, '.gnosis/project.json');
-  if (fs.existsSync(configPath)) {
-    safePath(configPath);
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    if (config.version !== 1 || config.tracker?.type !== 'local' || typeof config.tracker.path !== 'string') fail('不支持的 .gnosis/project.json 配置');
-    tracker = trackerOverride || config.tracker.path;
-    if (config.reports !== undefined && (typeof config.reports !== 'string' || !config.reports.trim() || path.isAbsolute(config.reports) || !inside(root, path.resolve(root, config.reports)))) fail('reports 必须位于项目内');
-    if (config.reports !== undefined) safePath(path.resolve(root, config.reports));
-  }
+  const config = readConfig(root);
+  if (config?.tracker.type === 'remote' && !trackerOverride) fail('远程 tracker 只支持 config 配置检查；本地副本请显式指定 --tracker');
+  const tracker = trackerOverride ?? config?.tracker.path ?? 'issues';
   if (path.isAbsolute(tracker) || !tracker.trim()) fail('tracker 必须是非空项目相对路径');
   const dir = safePath(path.resolve(root, tracker));
   if (!inside(root, dir)) fail('tracker 必须位于项目内');
@@ -153,8 +192,11 @@ function checkLinks(source, entries) {
   return errors;
 }
 export function migrate({ source, target, format, apply = false, mapping = {} }) {
-  if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(mapping))) fail('状态映射必须是普通 JSON 对象');
-  if (Object.entries(mapping).some(([key, value]) => !key.trim() || typeof value !== 'string' || !statuses.has(value))) fail('状态映射键必须是非空字符串，值必须是标准状态字符串');
+  if (!object(mapping)) fail('状态映射必须是普通 JSON 对象');
+  for (const [key, value] of Object.entries(mapping)) {
+    const fields = typeof value === 'string' ? { status: value } : value;
+    if (!key.trim() || !object(fields) || !statuses.has(fields.status) || Object.keys(fields).some(field => !['status', 'category', 'triage'].includes(field)) || (fields.category !== undefined && !categories.has(fields.category)) || (fields.triage !== undefined && !triages.has(fields.triage))) fail('状态映射须为标准状态字符串，或含标准 status 及可选 category/triage 的对象');
+  }
   source = safePath(source); target = safePath(target);
   if (!['legacy', 'scratch'].includes(format)) fail('format 必须是 legacy 或 scratch');
   if (inside(source, target) || inside(target, source)) fail('源目标必须互不嵌套');
@@ -182,12 +224,15 @@ export function migrate({ source, target, format, apply = false, mapping = {} })
       const d = original.data;
       // Explicit mapping is the only mechanism for unfamiliar source state names.
       if (typeof d.status !== 'string' || !d.status.trim()) fail(`${entry.relative}: 源 status 必须是非空字符串`);
-      const status = Object.hasOwn(mapping, d.status) ? mapping[d.status] : (Object.hasOwn(known, d.status) ? known[d.status] : undefined);
+      const mapped = Object.hasOwn(mapping, d.status) ? mapping[d.status] : (Object.hasOwn(known, d.status) ? known[d.status] : undefined);
+      const fields = typeof mapped === 'string' ? { status: mapped } : mapped;
+      const status = fields?.status;
       if (!status || !statuses.has(status)) fail(`${entry.relative}: 未知状态 ${JSON.stringify(d.status)}，请提供显式映射`);
       if (typeof d.id !== 'string' || !Array.isArray(d.depends_on)) fail(`${entry.relative}: 缺少明确 id/depends_on；请先人工建立映射`);
-      states.push({ path: entry.relative, from: d.status, to: status });
+      const data = { ...d, ...fields };
+      if (d.status === 'wontfix' && data.triage === undefined) data.triage = 'wontfix';
+      states.push({ path: entry.relative, from: d.status, to: status, ...(data.category === undefined ? {} : { category: data.category }), ...(data.triage === undefined ? {} : { triage: data.triage }) });
       ids.push({ path: entry.relative, from: original.sourceId ?? d.id, to: d.id, depends_on: d.depends_on, ...(d.parent === undefined ? {} : { parent: d.parent }) });
-      const data = { ...d, status };
       records.push({ data, file: entry.relative });
       output.push({ ...entry, bytes: Buffer.from(`---\n${stringify(data)}---\n${original.body}`) });
     } catch (e) { errors.push(e.message); }
@@ -236,7 +281,7 @@ export function migrate({ source, target, format, apply = false, mapping = {} })
 function main() {
   const args = process.argv.slice(2), command = args.shift();
   if (!command || command === '--help') {
-    console.log('tracker.mjs check <project-root> [--tracker <relative-path>]\ntracker.mjs migrate --source <feature-root> --target <new-directory> --format <scratch|legacy> [--map <json-file>] [--apply]\n默认只预览 JSON；退出码 0=通过，1=错误。安装依赖：在技能目录运行 npm ci。'); return;
+    console.log('tracker.mjs config <project-root>\ntracker.mjs check <project-root> [--tracker <relative-path>]\ntracker.mjs migrate --source <feature-root> --target <new-directory> --format <scratch|legacy> [--map <json-file>] [--apply]\nconfig 只校验配置；check 校验本地工单；migrate 默认只预览 JSON；退出码 0=通过，1=错误。安装依赖：在技能目录运行 npm ci。'); return;
   }
   const options = {}, positional = [];
   while (args.length) {
@@ -249,7 +294,8 @@ function main() {
     else positional.push(arg);
   }
   let result;
-  if (command === 'check' && positional.length === 1) result = check(positional[0], options.tracker);
+  if (command === 'config' && positional.length === 1 && !Object.keys(options).length) result = checkConfig(positional[0]);
+  else if (command === 'check' && positional.length === 1) result = check(positional[0], options.tracker);
   else if (command === 'migrate' && !positional.length && options.source && options.target) {
     const mapping = options.map ? JSON.parse(fs.readFileSync(safePath(options.map), 'utf8')) : {};
     if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object') fail('状态映射必须是 JSON 对象');

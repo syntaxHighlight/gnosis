@@ -5,11 +5,12 @@
 ## 检查
 
 ```sh
+node scripts/tracker.mjs config /absolute/project
 node scripts/tracker.mjs check /absolute/project
 node scripts/tracker.mjs check /absolute/project --tracker work/issues
 ```
 
-`--tracker` 显式覆盖配置中的路径。没有配置时用 `issues`。扫描所有 `.md`（排除 `spec.md` 与 `_originals/` 归档），不读取旧工具的派生索引。最小工单：
+`config` 检查可选配置，保留旧版 v1 兼容，验证统一模式、项目内路径、验证命令列表、Git 模式/base、远程字段映射的类型与枚举；不执行命令或连接远程。`--tracker` 显式覆盖配置中的路径。没有配置时用 `issues`；远程配置下 `check` 必须显式指定本地副本，远程本身用原生工具验证。扫描所有 `.md`（排除 `spec.md` 与 `_originals/` 归档），不读取旧工具的派生索引。最小工单：
 
 ```markdown
 ---
@@ -21,7 +22,7 @@ depends_on: []
 正文和评论按项目约定维护。
 ```
 
-`parent` 可省略或为 `null`，字符串值必须是一个已有工单 ID。`depends_on` 必须显式给出列表。检查器检测重复 ID、缺失引用，并分别检查依赖环与 parent 归属环。parent 不自动生成依赖；两类边的混合调度风险由具体项目规则判断。检查器不自动更改状态，也不判断某个 done 工单是否真正完成验收。
+`parent` 可省略或为 `null`，字符串值必须是一个已有工单 ID。`category` 可省略或为 `bug | enhancement`；`triage` 可省略或为 `needs-triage | needs-info | ready-for-agent | ready-for-human | wontfix`；执行状态仍用五种标准 `status`。检查器不从 `labels` 推断这些字段，也不改变其他扩展字段。`depends_on` 必须显式给出列表。检查器检测重复 ID、缺失引用，并分别检查依赖环与 parent 归属环。parent 不自动生成依赖；两类边的混合调度风险由具体项目规则判断。检查器不自动更改状态，也不判断某个 done 工单是否真正完成验收；完成需人工或代理逐项核对验收证据。
 
 ## 预览来源
 
@@ -31,7 +32,9 @@ Matt Pocock 的源指向单个 `.scratch/<feature>`，包含 `spec.md` 与 `issu
 node scripts/tracker.mjs migrate --source /absolute/project/.scratch/login --target /absolute/project/migrated-login --format scratch
 ```
 
-支持原版 `to-tickets` 的 `# NN: 标题`、`**Status:** 值`、`**Blocked by:** NN, NN` 文本模板，亦支持已有标准 frontmatter。文件名前缀须与标题编号一致，保留前导零。无依赖可写 `None` 或模板中的 `None (can start immediately)`。含标题、混合链接或不能唯一识别的依赖会阻塞，需先在人审副本中明确编号；CLI 不推断标题对应哪个工单。缺少状态或依赖行也会阻塞。
+支持原版 `to-tickets` 的 `# NN: 标题`、`**Status:** 值`、`**Blocked by:** NN, NN` 文本模板，亦支持已有标准 frontmatter。文件名前缀须与标题编号一致，保留前导零。无依赖可写 `None` 或模板中的 `None (can start immediately)`。
+
+`Blocked by` 中若使用工单标题、混合链接或其他无法唯一识别的写法，迁移会阻塞。先在源目录副本中人工核对并将这些依赖写成明确编号，再以该副本为源重新预览。CLI 不推断标题对应哪个工单。缺少状态或依赖行也会阻塞。
 
 旧版 frontmatter tracker 的源指向包含 `issues/` 的目录：
 
@@ -39,13 +42,13 @@ node scripts/tracker.mjs migrate --source /absolute/project/.scratch/login --tar
 node scripts/tracker.mjs migrate --source /absolute/old-project --target /absolute/project/imported --format legacy
 ```
 
-按真实模板将正整数 `id` / `deps` / `parent` 转成字符串 ID / `depends_on` / 可选 `parent`；`null` parent 省略。保留 `issues/done/`、`issues/wontfix/` 相对路径，不移动和重新编号。状态 `wontfix` 映射为 `cancelled`；已有标准状态保持。`review`、`ready-for-agent`、`claimed`、`resolved` 等不等于标准状态，由用户明确决定后用 JSON 对象映射，例如：
+按真实模板将正整数 `id` / `deps` / `parent` 转成字符串 ID / `depends_on` / 可选 `parent`；`null` parent 省略。保留 `issues/done/`、`issues/wontfix/` 相对路径，不移动和重新编号。旧执行状态 `wontfix` 映射为 `cancelled`，且缺少 triage 时补上 `triage: wontfix` 以保留判断；已有标准状态保持。`review`、`ready-for-agent`、`claimed`、`resolved` 等不等于标准状态，由用户明确决定后用 JSON 对象映射，例如：
 
 ```json
-{ "ready-for-agent": "todo", "review": "in-progress" }
+{ "ready-for-agent": { "status": "todo", "triage": "ready-for-agent" }, "review": "in-progress" }
 ```
 
-源状态必须是非空字符串；数组、null 和对象等不会隐式转换。映射必须是普通 JSON 对象，键非空，值为标准状态字符串。将此对象存为文件，再附加 `--map /absolute/state-map.json`。映射仅表达该次迁移决定，不能据此推断其他项目。重复字段、未知状态、重复 ID、缺失依赖、循环、歧义均阻塞 apply。
+源状态必须是非空字符串；数组、null 和对象等不会隐式转换。映射必须是普通 JSON 对象，键非空，值为标准状态字符串，或含标准 `status` 与可选 `category`、`triage` 的对象。显式对象字段覆盖对应源字段；未列出的源扩展字段保留。旧字符串映射继续有效，不自动推断 triage 或 category。将此对象存为文件，再附加 `--map /absolute/state-map.json`。映射仅表达该次迁移决定，不能据此推断其他项目。重复字段、未知 status/category/triage、重复 ID、缺失依赖、循环、歧义均阻塞 apply，源文件保持原样。
 
 ## 保留范围与引用
 

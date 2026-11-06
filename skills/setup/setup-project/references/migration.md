@@ -1,16 +1,16 @@
 # 本地检查与迁移
 
-运行前由代理按 [技能入口](../SKILL.md) 准备 Node.js 20+ 和锁定的 `yaml` 依赖；无需用户手动进入技能目录安装。`node scripts/tracker.mjs --help` 查看参数，`npm test` 运行行为测试。命令输出 JSON；退出码 0 表示通过，1 表示存在错误。
+运行前由代理按 [技能入口](../SKILL.md) 准备 Node.js 20+ 和锁定的 `yaml` 依赖，以下命令均在本技能目录执行；无需用户手动进入技能目录安装。`node scripts/tracker.mjs --help` 查看参数，`npm test` 运行行为测试。命令输出 JSON；退出码 0 表示通过，1 表示存在错误。
 
 ## 检查
 
 ```sh
 node scripts/tracker.mjs config /absolute/project
 node scripts/tracker.mjs check /absolute/project
-node scripts/tracker.mjs check /absolute/project --tracker work/issues
+node scripts/tracker.mjs check /absolute/project --tracker issues
 ```
 
-`config` 检查可选配置，保留旧版 v1 兼容，验证统一模式、项目内路径、验证命令列表、Git 模式/base、远程字段映射的类型与枚举；不执行命令或连接远程。`--tracker` 显式覆盖配置中的路径。没有配置时用 `issues`；远程配置下 `check` 必须显式指定本地副本，远程本身用原生工具验证。扫描所有 `.md`（排除 `spec.md` 与 `_originals/` 归档），不读取旧工具的派生索引。最小工单：
+`config` 检查可选配置，验证统一模式、固定产物位置、验证命令列表、Git 模式/base、远程字段映射的类型与枚举；不执行命令或连接远程。路径字段可省略，兼容指向固定位置的既有字段及等价相对写法；非标准位置明确报错，不移动文件。本地 `check` 固定扫描项目根的 `issues/`；`--tracker` 仅接受 `issues` 及等价相对写法，远程配置下检查本地副本时须显式传入它。远程本身用原生工具验证。扫描所有 `.md`（排除 `spec.md` 与 `_originals/` 归档），不读取旧工具的派生索引。最小工单：
 
 ```markdown
 ---
@@ -25,6 +25,8 @@ depends_on: []
 `parent` 可省略或为 `null`，字符串值必须是一个已有工单 ID。`category` 可省略或为 `bug | enhancement`；`triage` 可省略或为 `needs-triage | needs-info | ready-for-agent | ready-for-human | wontfix`；执行状态仍用五种标准 `status`。检查器不从 `labels` 推断这些字段，也不改变其他扩展字段。`depends_on` 必须显式给出列表。检查器检测重复 ID、缺失引用，并分别检查依赖环与 parent 归属环。parent 不自动生成依赖；两类边的混合调度风险由具体项目规则判断。检查器不自动更改状态，也不判断某个 done 工单是否真正完成验收；完成需人工或代理逐项核对验收证据。
 
 ## 预览来源
+
+`--target` 是尚不存在的独立暂存或导出根，不是项目产物位置配置。工具在其下生成固定的 `issues/`、来源规格和归档，不自动写入项目或切换入口。接入时另行预览暂存产物到项目 `issues/`、`specs/` 的路径与引用映射，确认后应用；已有文件不自动移动。
 
 Matt Pocock 的源指向单个 `.scratch/<feature>`，包含 `spec.md` 与 `issues/*.md`：
 
@@ -62,14 +64,14 @@ node scripts/tracker.mjs migrate --source /absolute/old-project --target /absolu
 
 展示预览的所有映射与限制，获得用户针对本次具体源目标和状态转换的明确迁移确认，再为预览命令加 `--apply`。CLI 的显式参数是技术开关，不替代技能工作流中的确认。
 
-源目标必须互不嵌套，目标必须尚不存在且其父目录存在。CLI 拒绝路径上的符号链接（检查项目配置时 reports 路径也遵循此规则；包括系统别名；macOS 临时路径请用 `/private/tmp` 或真实路径）、源树符号链接、保留路径冲突与覆盖。
+源目标必须互不嵌套，目标必须尚不存在且其父目录存在。CLI 拒绝路径上的符号链接（检查项目固定产物路径时也遵循此规则；包括系统别名；macOS 临时路径请用 `/private/tmp` 或真实路径）、源树符号链接、保留路径冲突与覆盖。
 
 CLI 在目标父目录的临时目录中写入并逐字节校验，检查迁移工单，再核对源是否变化，独占创建目标后发布。失败时清理暂存；若发布途中系统失败，可能留下部分目标，会明确报告，源文件不删除或覆盖。该工具不提供针对并发恶意替换目录的文件系统事务保证，应在目录未被其他进程改写时执行。
 
 成功后再运行：
 
 ```sh
-node scripts/tracker.mjs check /absolute/project --tracker imported/issues
+node scripts/tracker.mjs check /absolute/project/imported
 ```
 
-检查归档、spec 与正文，确认 `migration.json`。然后 agent 可按照已确认的 tracker 选择，将 `.gnosis/project.json` 的 `tracker.path` 改为 `imported/issues`；CLI 自身不切换配置。保留原来源，用户另行决定何时归档。`--apply` 返回失败时不切换配置，也不宣称迁移完成。
+上述命令检查示例中的 legacy 暂存根；scratch 示例使用其对应暂存根。检查归档、spec 与正文，确认 `migration.json`。导出成功不等于项目已接入：另行展示暂存产物到项目固定位置的具体路径与引用映射，已确认的映射直接复用，未覆盖的决定获得确认后应用；工单进入项目 `issues/`，规格进入 `specs/`，核对目标和引用后再按已确认的 tracker 类型更新配置与发现入口。CLI 自身不切换配置，不能将 `tracker.path` 改为暂存路径。保留原来源，用户另行决定何时归档。`--apply` 返回失败时不切换入口，也不宣称迁移完成。

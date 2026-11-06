@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { check, checkConfig, migrate } from '../scripts/tracker.mjs';
 
 function fixture(t) {
@@ -40,6 +42,7 @@ test('default migration previews without writes; apply preserves bodies, origina
   const options = { ...f, format: 'scratch' };
   const preview = migrate(options);
   assert.equal(preview.ok, true); assert.equal(preview.applied, false); assert.equal(fs.existsSync(f.target), false);
+  assert.match(preview.limitations.join('\n'), /独立迁移暂存根.*不配置或接入项目/);
   const result = migrate({ ...options, apply: true });
   assert.equal(result.applied, true);
   assert.equal(fs.readFileSync(path.join(f.source, 'issues/a.md'), 'utf8'), raw);
@@ -50,6 +53,7 @@ test('default migration previews without writes; apply preserves bodies, origina
   assert.equal(fs.readFileSync(path.join(f.target, 'spec.md'), 'utf8'), fs.readFileSync(path.join(f.source, 'spec.md'), 'utf8'));
   assert.equal(result.states[0].from, 'wontfix');
   assert.equal(check(f.target).ok, true);
+  assert.equal(fs.existsSync(path.join(f.target, '.gnosis/project.json')), false);
   assert.throws(() => migrate({ ...options, apply: true }), /目标已存在/);
 });
 test('unknown state blocks apply until an explicit mapping is supplied', t => {
@@ -75,16 +79,53 @@ test('symlinks, nested targets, collisions and escaping config are rejected', t 
   assert.throws(() => migrate({ ...f, format: 'legacy' }), /符号链接/);
   fs.unlinkSync(path.join(f.source, 'issues/link.md'));
   f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: '../outside' } }));
-  assert.throws(() => check(f.source), /tracker 必须位于项目内/);
+  assert.throws(() => check(f.source), /tracker.path.*固定.*issues/);
   fs.unlinkSync(path.join(f.source, '.gnosis/project.json'));
   f.write('issues/_originals/secret.md', 'collision');
   assert.throws(() => migrate({ ...f, format: 'legacy' }), /保留路径/);
 });
-test('optional project config selects tracker path', t => {
+test('project artifact paths are fixed and nonstandard configuration never moves files', t => {
   const f = fixture(t);
-  f.write('custom/a.md', issue('a'));
-  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'custom' }, reports: 'reports' }));
+  const raw = issue('a');
+  f.write('custom/a.md', raw);
+  const config = { version: 1, tracker: { type: 'local', path: 'issues' } };
+  for (const [field, value] of [['tracker.path', 'custom'], ['reports', 'custom'], ['specs', 'custom'], ['glossary', 'custom.md'], ['adr', 'custom']]) {
+    const invalid = field === 'tracker.path' ? { ...config, tracker: { type: 'local', path: value } } : { ...config, [field]: value };
+    const text = JSON.stringify(invalid);
+    f.write('.gnosis/project.json', text);
+    assert.throws(() => checkConfig(f.source), /固定/, field);
+    assert.throws(() => check(f.source, 'issues'), /固定/, field);
+    assert.equal(fs.readFileSync(path.join(f.source, '.gnosis/project.json'), 'utf8'), text);
+    assert.equal(fs.readFileSync(path.join(f.source, 'custom/a.md'), 'utf8'), raw);
+    assert.equal(fs.existsSync(path.join(f.source, 'issues/a.md')), false);
+  }
+  f.write('issues/a.md', raw);
+  for (const tracker of [{ type: 'local' }, { type: 'local', path: 'issues' }, { type: 'local', path: './issues/' }]) {
+    f.write('.gnosis/project.json', JSON.stringify({ ...config, tracker }));
+    assert.equal(check(f.source).count, 1);
+  }
+  const equivalent = { ...config, specs: './specs/', reports: 'reports/', glossary: './GLOSSARY.md', adr: './docs/adr/' };
+  f.write('.gnosis/project.json', JSON.stringify(equivalent));
+  assert.deepEqual(checkConfig(f.source).config, equivalent);
+  for (const [field, value] of [['tracker.path', null], ['reports', ''], ['specs', null], ['glossary', 3], ['adr', []]]) {
+    f.write('.gnosis/project.json', JSON.stringify(field === 'tracker.path' ? { ...config, tracker: { type: 'local', path: value } } : { ...config, [field]: value }));
+    assert.throws(() => checkConfig(f.source), /固定/, field);
+  }
+});
+test('tracker CLI and API cannot override the fixed issues directory', t => {
+  const f = fixture(t);
+  f.write('issues/a.md', issue('a'));
+  f.write('custom/b.md', issue('b'));
+  assert.throws(() => check(f.source, 'custom'), /固定.*issues/);
   assert.equal(check(f.source).count, 1);
+  const script = fileURLToPath(new URL('../scripts/tracker.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [script, 'check', f.source, '--tracker', 'custom'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(JSON.parse(result.stderr).errors.join('\n'), /固定.*issues/);
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { type: 'local', path: 'custom' } }));
+  const configured = spawnSync(process.execPath, [script, 'config', f.source], { encoding: 'utf8' });
+  assert.equal(configured.status, 1);
+  assert.match(JSON.parse(configured.stderr).errors.join('\n'), /tracker.path.*固定.*issues/);
 });
 
 test('real legacy template converts numeric ids, deps, null parent and preserves closed subdirectories', t => {
@@ -255,13 +296,34 @@ test('remote mapping is checked without pretending to validate remote records', 
   const write = value => f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: value }));
   write(tracker);
   assert.equal(checkConfig(f.source).ok, true);
+  for (const value of ['issues', './issues/']) {
+    write({ ...tracker, path: value });
+    assert.equal(checkConfig(f.source).ok, true);
+  }
+  for (const value of ['custom', '', null]) {
+    write({ ...tracker, path: value });
+    assert.throws(() => checkConfig(f.source), /tracker.path.*固定.*issues/);
+  }
+  write(tracker);
   assert.throws(() => check(f.source), /远程 tracker/);
-  f.write('copy/a.md', issue('a'));
-  assert.equal(check(f.source, 'copy').count, 1);
+  f.write('issues/a.md', issue('a'));
+  assert.throws(() => check(f.source, 'copy'), /固定.*issues/);
+  assert.equal(check(f.source, 'issues').count, 1);
   for (const patch of [{ provider: '' }, { project: null }, { mapping: [] }, { mapping: { triage: { ready: 'ready' } } }, { mapping: { status: { todo: 'same', done: 'same' } } }, { mapping: { category: { bug: ['bug'] } } }, { mapping: { labels: {} } }]) {
     write({ ...tracker, ...patch });
     assert.throws(() => checkConfig(f.source), undefined, JSON.stringify(patch));
   }
+});
+
+test('remote configuration without a local path does not inspect the issues directory', t => {
+  const f = fixture(t);
+  fs.rmdirSync(path.join(f.source, 'issues'));
+  fs.symlinkSync(path.join(f.dir, 'missing'), path.join(f.source, 'issues'));
+  const tracker = { type: 'remote', provider: 'github', project: 'owner/repo' };
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker }));
+  assert.equal(checkConfig(f.source).ok, true);
+  f.write('.gnosis/project.json', JSON.stringify({ version: 1, tracker: { ...tracker, path: 'issues' } }));
+  assert.throws(() => checkConfig(f.source), /符号链接/);
 });
 
 test('new configured locations reject symlinks even before files exist', t => {

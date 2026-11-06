@@ -5,7 +5,7 @@ description: 分诊尚未明确的缺陷、改进请求和外来 PR，核实事�
 
 # 请求分诊
 
-将原始反馈推进到有依据的处理决定。先读取 [tracker 约定](references/tracker.md)，确认请求来源、项目分类和分诊映射。请求分诊负责内容判断，`maintain-tasks` 负责记录、依赖与状态维护，`to-tickets` 负责将已决定目标拆分成交付任务。YAML 字段校验交给 tracker 工具。
+将原始反馈推进到有依据的处理决定。先读取 [tracker 约定](references/tracker.md)，确认请求来源、项目分类和分诊映射。请求分诊负责内容判断，`maintain-tasks` 负责记录、依赖与状态维护，`to-spec` 负责将已决定目标拆分成交付任务。YAML 字段校验交给 tracker 工具。
 
 ## 建立事实
 

@@ -83,9 +83,9 @@ function validate(records) {
 function object(value) {
   return value !== null && !Array.isArray(value) && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 }
-function projectPath(root, value, field) {
-  if (typeof value !== 'string' || !value.trim() || path.isAbsolute(value) || path.win32.isAbsolute(value) || !inside(root, path.resolve(root, value))) fail(`${field} 必须位于项目内，且为非空相对路径`);
-  safePath(path.resolve(root, value));
+function fixedProjectPath(root, value, field, fixed) {
+  if (value !== undefined && (typeof value !== 'string' || !value.trim() || path.isAbsolute(value) || path.win32.isAbsolute(value) || path.resolve(root, value) !== path.resolve(root, fixed))) fail(`${field} 路径固定为 ${fixed}；不支持配置覆盖，请明确确认后人工迁移现有文件`);
+  safePath(path.resolve(root, fixed));
 }
 function fieldMapping(mapping, field, allowed) {
   if (!object(mapping) || Object.entries(mapping).some(([key, value]) => !allowed.has(key) || typeof value !== 'string' || !value.trim())) fail(`${field} 必须将标准字段值映射到非空远程字符串`);
@@ -99,9 +99,10 @@ export function readConfig(root) {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (!object(config) || config.version !== 1 || !object(config.tracker)) fail('不支持的 .gnosis/project.json 配置');
   if (config.mode !== undefined && config.mode !== 'gnosis') fail('mode 必须为 gnosis');
-  if (config.tracker.type === 'local') projectPath(root, config.tracker.path, 'tracker');
+  if (config.tracker.type === 'local') fixedProjectPath(root, config.tracker.path, 'tracker.path', 'issues');
   else if (config.tracker.type === 'remote') {
     for (const field of ['provider', 'project']) if (typeof config.tracker[field] !== 'string' || !config.tracker[field].trim()) fail(`远程 tracker.${field} 必须是非空字符串`);
+    if (config.tracker.path !== undefined) fixedProjectPath(root, config.tracker.path, 'tracker.path', 'issues');
   } else fail('tracker.type 必须为 local 或 remote');
   if (config.tracker.mapping !== undefined) {
     if (!object(config.tracker.mapping)) fail('tracker.mapping 必须是对象');
@@ -110,7 +111,7 @@ export function readConfig(root) {
     }
     for (const field of Object.keys(config.tracker.mapping)) if (!['status', 'category', 'triage'].includes(field)) fail(`未知 tracker.mapping 字段 ${field}`);
   }
-  for (const field of ['reports', 'glossary', 'adr', 'specs']) if (config[field] !== undefined) projectPath(root, config[field], field);
+  for (const [field, fixed] of [['reports', 'reports'], ['glossary', 'GLOSSARY.md'], ['adr', 'docs/adr'], ['specs', 'specs']]) fixedProjectPath(root, config[field], field, fixed);
   if (config.verification !== undefined && (!object(config.verification) || !Array.isArray(config.verification.commands) || config.verification.commands.some(command => typeof command !== 'string' || !command.trim()))) fail('verification.commands 必须为字符串列表，各命令非空；列表可为空');
   if (config.git !== undefined) {
     if (!object(config.git) || !['delivery', 'manual'].includes(config.git.mode)) fail('git.mode 必须为 delivery 或 manual');
@@ -125,11 +126,9 @@ export function checkConfig(root) {
 export function check(root, trackerOverride) {
   root = safePath(root);
   const config = readConfig(root);
-  if (config?.tracker.type === 'remote' && !trackerOverride) fail('远程 tracker 只支持 config 配置检查；本地副本请显式指定 --tracker');
-  const tracker = trackerOverride ?? config?.tracker.path ?? 'issues';
-  if (path.isAbsolute(tracker) || !tracker.trim()) fail('tracker 必须是非空项目相对路径');
-  const dir = safePath(path.resolve(root, tracker));
-  if (!inside(root, dir)) fail('tracker 必须位于项目内');
+  fixedProjectPath(root, trackerOverride, '--tracker', 'issues');
+  if (config?.tracker.type === 'remote' && trackerOverride === undefined) fail('远程 tracker 只支持 config 配置检查；本地副本请显式指定 --tracker issues');
+  const dir = path.join(root, 'issues');
   const records = [], errors = [];
   for (const file of files(dir).filter(p => p.endsWith('.md') && !path.relative(dir, p).split(path.sep).includes('_originals') && path.basename(p) !== 'spec.md')) {
     try { records.push({ ...frontmatter(fs.readFileSync(file, 'utf8'), file), file }); }
@@ -242,7 +241,7 @@ export function migrate({ source, target, format, apply = false, mapping = {} })
     version: 1, format, source, target,
     paths: entries.map(e => ({ from: e.relative, to: e.relative, original: path.join('_originals', e.relative), sha256: hash(e.bytes) })),
     states, ids, errors,
-    limitations: ['仅验证简单行内 Markdown 文件链接；裸工单号、纯文本路径、自定义元数据引用需人工核对', '外部 URL 原样保留，未联网验证', '仅采集 issues/、spec.md、map.md；旧派生索引只作快照保留'],
+    limitations: ['目标是独立迁移暂存根，保留源相对布局；不配置或接入项目，接入须人工确认后放入项目固定产物路径', '仅验证简单行内 Markdown 文件链接；裸工单号、纯文本路径、自定义元数据引用需人工核对', '外部 URL 原样保留，未联网验证', '仅采集 issues/、spec.md、map.md；旧派生索引只作快照保留'],
   };
   if (!apply || errors.length) return { ok: errors.length === 0, applied: false, ...manifest };
   // Stage and verify every file before publishing; target is never merged.
@@ -281,7 +280,7 @@ export function migrate({ source, target, format, apply = false, mapping = {} })
 function main() {
   const args = process.argv.slice(2), command = args.shift();
   if (!command || command === '--help') {
-    console.log('tracker.mjs config <project-root>\ntracker.mjs check <project-root> [--tracker <relative-path>]\ntracker.mjs migrate --source <feature-root> --target <new-directory> --format <scratch|legacy> [--map <json-file>] [--apply]\nconfig 只校验配置；check 校验本地工单；migrate 默认只预览 JSON；退出码 0=通过，1=错误。安装依赖：在技能目录运行 npm ci。'); return;
+    console.log('tracker.mjs config <project-root>\ntracker.mjs check <project-root> [--tracker issues]\ntracker.mjs migrate --source <feature-root> --target <new-staging-root> --format <scratch|legacy> [--map <json-file>] [--apply]\n项目产物路径固定为 issues/、specs/、reports/、GLOSSARY.md、docs/adr/，不支持配置覆盖；远程 tracker 的本地副本检查须显式指定 --tracker issues。\nconfig 只校验配置；check 校验本地工单；migrate 默认只预览 JSON，--target 是保留源布局的独立暂存根，不自动接入或配置项目；确认后用 --apply 应用。退出码 0=通过，1=错误。安装依赖：在技能目录运行 npm ci。'); return;
   }
   const options = {}, positional = [];
   while (args.length) {

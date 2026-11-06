@@ -16,8 +16,7 @@ description: 根据目标、当前阶段和缺失信息发现适合的技能与�
 | 澄清目标、行为和设计取舍 | `grill-me`，需要同步术语和决定时 `grill-with-docs` |
 | 外部事实或候选证据不足 | `research` |
 | 运行结果才能回答设计问题 | `prototype` |
-| 共识需要形成验收契约 | `to-spec` |
-| 已确定目标需要拆成交付任务 | `to-tickets` |
+| 共识需要形成验收契约，或成熟规格需要拆成交付任务 | `to-spec` |
 | 已有任务记录需要整理 | `maintain-tasks` |
 | 开始实现明确工作 | `implement`，测试先行时配合 `tdd` |
 | 解释异常或性能退化 | `diagnosing-bugs` |
@@ -25,7 +24,8 @@ description: 根据目标、当前阶段和缺失信息发现适合的技能与�
 | 比较模块接口与职责方案 | `codebase-design` |
 | 审查变更或专项设计问题 | `code-review`、`review-code-design` |
 | 更换会话或接手中断现场 | 交接前 `handoff`，接手后 `recover-work` |
-| 维护文档、清理残余或呈现复杂结果 | 按目标选择 `maintain-docs`、`clean-workspace`、`present-report` |
+| 清理无用文件、将未提交修改分组提交，或 squash 等整理提交历史 | `clean-workspace`，按请求和授权选择分支 |
+| 维护文档或呈现复杂结果 | 按目标选择 `maintain-docs`、`present-report` |
 | 代理流程出现反复失败 | `improve-skills` |
 
 这张表提供方向，实际安装技能及用户已有流程优先。领域术语和架构决定需要澄清时使用 `domain-modeling`。必需技能缺失时说明具体缺口及可行替代，安装操作遵循用户的安装意图和权限。

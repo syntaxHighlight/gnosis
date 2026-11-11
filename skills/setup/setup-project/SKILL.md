@@ -7,84 +7,17 @@ description: 为项目建立统一 Gnosis 约定，验证配置与本地工单�
 
 ## 接入步骤
 
-1. 盘点任务系统、分类与分诊语义、文档位置、验证入口和 Git 交付约定。读取实际记录与命令，标明未知项。
-2. 给出目标约定和迁移差异。Gnosis 项目产物固定为本地任务 `issues/`、术语表 `GLOSSARY.md`、ADR `docs/adr/`、规格 `specs/` 和报告 `reports/`，不通过配置覆盖。已有远程 tracker 可以继续使用。只创建本次需要的文件和目录。
+1. 盘点任务系统、分类与分诊语义、文档位置、验证入口和 Git 交付约定。读取实际记录与命令，标明未知项。盘点时按项目已有记录读取，无需立即运行工具；仅当需要校验配置格式、预览迁移结果或应用迁移时，才按下文准备 Node.js 20+ 和 npm 依赖环境。
+2. 给出目标约定和迁移差异。Gnosis 项目产物固定为本地任务 `issues/`、术语表 `GLOSSARY.md`、ADR `docs/adr/`、规格 `specs/` 和报告 `reports/`，不通过配置覆盖。已有远程 tracker 可以继续使用。涉及 ADR 约定时，读取 [ADR 维护约定](references/decision-records.md)。只创建本次需要的文件和目录。
 3. 将需要用户决定的迁移、已有改动处理和交付偏好集中呈现。已确认的选择直接复用，配置说明与操作授权分别记录。发现非标准旧路径配置时说明其不能继续覆盖固定位置，核对实际文件及引用；不因更新配置自动移动现存文件。
 4. 在确认范围内迁移并建立发现入口。tracker 使用下面的预览与应用流程；术语表、ADR 和其他文档按路径、标识、状态与入链映射进行人工迁移，现有 CLI 只处理 tracker。验证目标内容和引用后切换权威入口，源记录的归档或删除按已确认方案执行。
 5. 核对配置与真实入口一致，报告已完成接入、实际验证及待人工处理项。
 
 迁移、切换 tracker 与新建配置是不同操作。现存项目文件继续按原入口读取，接入迁移须先预览并确认；未迁移的记录不冒充已完成接入。
 
-## 项目配置
+## 配置与校验
 
-完整接入时写入 `.gnosis/project.json` 作为统一发现入口，保留与本次接入无关的扩展字段。旧项目和单项分析可以暂时缺少配置。
-
-```json
-{
-  "version": 1,
-  "mode": "gnosis",
-  "tracker": { "type": "local" },
-  "verification": { "commands": ["npm run verify"] },
-  "git": { "mode": "delivery", "base": "main" }
-}
-```
-
-| 字段 | 用途与约束 |
-| --- | --- |
-| `version` | 配置版本，使用 `1`。 |
-| `mode` | 可选，统一模式为 `gnosis`。 |
-| `tracker` | 本地使用 `type: local`；远程使用下节的 provider、project 与字段映射。 |
-| `verification.commands` | 可选，记录核实过的项目验证命令；空列表表示尚未记录验证入口。工具不执行这些命令。 |
-| `git.mode` | 可选，`delivery` 表示完整交付偏好，`manual` 表示每次按具体授权操作。 |
-| `git.base` | 可选，记录核实过的 base。 |
-
-示例命令与 base 必须换成项目实际值。新项目推荐 `git.mode: delivery`；分支或 worktree 按工作规模、风险与协作情况选择。配置只记录选择，不授予凭据、远程写入、提交、推送或发布权限。`tracker.path`、`glossary`、`adr`、`specs` 和 `reports` 不提供路径覆盖；兼容指向固定位置的既有字段，非标准位置会报错。已有文件的迁移与旧配置清理须明确列入接入方案。
-
-### 远程 tracker
-
-已有 GitHub、GitLab 或其他 tracker 时沿用它，记录实际操作方式与字段映射。以下为配置中的 `tracker` 对象示例：
-
-```json
-{
-  "type": "remote",
-  "provider": "github",
-  "project": "owner/repo",
-  "mapping": {
-    "status": {
-      "todo": "Todo",
-      "done": "Done"
-    },
-    "category": {
-      "bug": "bug",
-      "enhancement": "enhancement"
-    },
-    "triage": {
-      "needs-triage": "needs-triage",
-      "needs-info": "needs-info",
-      "ready-for-agent": "ready-for-agent",
-      "ready-for-human": "ready-for-human",
-      "wontfix": "wontfix"
-    }
-  }
-}
-```
-
-`provider` 与 `project` 必须非空。各映射将标准值映射到实际远程字段值或标签；映射可按需列出，同一字段内不能多值映射到同一远程值，未映射值须按项目规则明确处理。一次 triage 只能有一个明确值，替换时移除同组旧标签，保留其他标签。不要根据 Git remote 推断或创建远程项目。CLI 只校验配置与本地文件，不访问远程；远程记录用其原生工具核对。
-
-### 本地 tracker
-
-本地工单固定放在项目根的 `issues/`，使用带 YAML frontmatter 的 Markdown：
-
-| 字段 | 要求 |
-| --- | --- |
-| `id`、`title` | 必填字符串；ID 稳定且唯一。 |
-| `status` | 必填，`todo \| in-progress \| blocked \| done \| cancelled`。 |
-| `depends_on` | 必填，前置工单的字符串 ID 列表。 |
-| `parent` | 可选，归属工单的字符串 ID 或 `null`。 |
-| `category` | 可选，`bug \| enhancement`。 |
-| `triage` | 可选，`needs-triage \| needs-info \| ready-for-agent \| ready-for-human \| wontfix`。 |
-
-执行状态、分类和分诊三类字段独立，不能把 triage 当成执行状态或从多个标签猜测当前值；旧记录无需补填可选字段。只有 `done` 满足依赖，`cancelled` 需要重新决策。父任务不因子任务全部完成而自动完成。
+配置示例、字段说明与状态语义详见 [跟踪约定](references/tracker.md)。完整接入时写入 `.gnosis/project.json` 作为统一发现入口，保留与本次接入无关的扩展字段；旧项目和单项分析可以暂时缺少配置。
 
 ### 配置与记录校验
 

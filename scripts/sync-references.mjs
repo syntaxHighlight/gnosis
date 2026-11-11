@@ -8,7 +8,7 @@ const check = process.argv.includes('--check');
 let failures = 0;
 for (const { name: skillName, dir } of await discoverSkills(path.join(root, 'skills'))) {
   const text = await fs.readFile(path.join(dir, 'SKILL.md'), 'utf8');
-  for (const name of ['artifacts', 'tracker', 'defensive-design', 'handoff', 'writing-for-agents', 'test-maintenance']) {
+  for (const name of ['artifacts', 'tracker', 'defensive-design', 'handoff', 'writing-for-agents', 'test-maintenance', 'decision-records']) {
     if (!text.includes(`references/${name}.md`)) continue;
     const content = await fs.readFile(path.join(root, 'shared', `${name}.md`), 'utf8');
     const target = path.join(dir, 'references', `${name}.md`);

@@ -26,3 +26,47 @@
 ## 审查与交付
 
 实施者说明重要覆盖的保留、迁移或移除依据，以及实际验证结果和剩余盲区；无需为每条测试建立长期台账。审查者核对需求依据、原风险的覆盖去向和替代保护的证据；证据不足时说明具体风险与缺口，不把未经验证的替代报告为完成。仅审查时保持只读。
+
+## 示例：内部发送方式变化
+
+以下 JavaScript 为示意，并非本项目已运行的测试。`UserService` 创建用户后仍须发送两封内容正确的欢迎和通知邮件，但实现从两次 `EmailSender.send` 改为一次 `sendBatch`。旧测试绑定了内部调用次数：
+
+```js
+await userService.createUser(input);
+expect(emailSender.send).toHaveBeenCalledTimes(2);
+```
+
+旧断言会因不再调用 `send` 而失败；发送两次并非契约，真正需要保护的是两封邮件及其内容。核对需求后，可将断言迁移到批量发送的内容：
+
+```js
+await userService.createUser(input);
+expect(emailSender.sendBatch).toHaveBeenCalledTimes(1);
+const [messages] = emailSender.sendBatch.mock.calls[0];
+expect(messages).toHaveLength(2);
+expect(messages).toEqual(expect.arrayContaining([
+  expect.objectContaining({ to: input.email, subject: '欢迎', body: '欢迎加入' }),
+  expect.objectContaining({ to: input.email, subject: '通知', body: '账户已创建' }),
+]));
+```
+
+这里两项预期可区分，长度断言配合 `arrayContaining` 排除重复、遗漏或额外邮件；若预期可能重叠，还须使用精确匹配或逐项计数。也可通过端到端邮箱检查实际收到的内容。交付时说明迁移依据是发送方式属于内部细节、保留行为是两封邮件的内容；用删除或改错其中一封的受控扰动验证断言会失败，并说明 mock 未覆盖真实投递等盲区。
+
+## 示例：需求废止自动保存
+
+以下 JavaScript 为示意，并非本项目已运行的测试。需求明确废止编辑后五秒自动保存，改为用户点击保存按钮时保存。旧测试会因为不再自动调用保存而失败：
+
+```js
+editDocument('新内容');
+advanceTimersByTime(5000);
+expect(saveDocument).toHaveBeenCalledWith('新内容');
+```
+
+删除旧测试，并按新契约验证点击保存：
+
+```js
+editDocument('新内容');
+clickSave();
+expect(saveDocument).toHaveBeenCalledWith('新内容');
+```
+
+交付时引用废止自动保存的需求决定，并运行受影响测试验证手动保存。已明确废止的行为无需另建“不自动保存”测试，除非需求明确要求保护这一点；还应说明示例断言没有验证真实持久化等未覆盖范围。
